@@ -374,6 +374,33 @@ def build_molmoact2_yam() -> Tuple[List[RawMixtureEntry], Dict[str, Dict[str, ob
     )
 
 
+def build_molmoact2_yam_overfit() -> Tuple[List[RawMixtureEntry], Dict[str, Dict[str, object]]]:
+    """One session of the public bimanual-YAM data: the pipeline-proof slice.
+
+    Identical conventions to the full ``yam`` mixture (same tag), with
+    ``repo_ids`` narrowed to a single session so a short run overfits it.
+    Overfit-then-re-predict is the end-to-end gate for the fine-tuning
+    pipeline before any of our own robot data exists.
+    """
+    return build_single_lerobot_mixture(
+        name="yam_overfit",
+        tag="yam_dual_molmoact2",
+        repo_ids=["lerobot:allenai/28112025-block-02"],
+        action_key="action",
+        state_keys=["observation.state"],
+        camera_keys=[
+            "observation.images.top",
+            "observation.images.left",
+            "observation.images.right",
+        ],
+        normalize_gripper=False,
+        setup_type="bimanual yam robotic arms in molmoact2",
+        control_mode="absolute joint pose",
+        action_horizon=30,
+        n_action_steps=30,
+    )
+
+
 def build_molmoact2_so100_so101() -> Tuple[List[RawMixtureEntry], Dict[str, Dict[str, object]]]:
     return build_single_lerobot_mixture(
         name="so100_so101",
@@ -395,5 +422,6 @@ MOLMOACT2_LEROBOT_MIXTURES: Dict[str, MixtureBuilder] = {
     "libero": build_molmoact2_libero,
     "libero_goal": build_molmoact2_libero_goal,
     "yam": build_molmoact2_yam,
+    "yam_overfit": build_molmoact2_yam_overfit,
     "so100_so101": build_molmoact2_so100_so101,
 }
