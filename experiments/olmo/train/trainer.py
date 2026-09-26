@@ -2683,7 +2683,7 @@ class Trainer:
         if wandb.run is not None:
             if exit_code != 0:
                 log.info(f"Finishing wandb with exit code {exit_code}")
-            wandb.finish(exit_code=exit_code, quiet=True)
+            wandb.finish(exit_code=exit_code)
         gc_cuda()
         if self._gc_init_state:
             gc.enable()
