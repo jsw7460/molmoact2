@@ -401,6 +401,29 @@ def build_molmoact2_yam_overfit() -> Tuple[List[RawMixtureEntry], Dict[str, Dict
     )
 
 
+def build_molmoact2_yam_single_cube() -> Tuple[List[RawMixtureEntry], Dict[str, Dict[str, object]]]:
+    """Our own single-arm YAM station data (one overhead camera, cube-on-box).
+
+    Recorded with yam-abc-reproduce and converted to LeRobot v3; the camera key
+    carries the recorder's ``_rgb`` suffix. Same absolute-joint-pose convention
+    as the bimanual ``yam`` tag, with 7-D state/action (6 joints + gripper).
+    The dataset is local-only: place it at ``$LEROBOT_DATA_ROOT/uwmad/yam_cube_v0``.
+    """
+    return build_single_lerobot_mixture(
+        name="yam_single_cube",
+        tag="yam_single_molmoact2",
+        repo_ids=["lerobot:uwmad/yam_cube_v0"],
+        action_key="action",
+        state_keys=["observation.state"],
+        camera_keys=["observation.images.top_rgb"],
+        normalize_gripper=False,
+        setup_type="single yam robotic arm in molmoact2",
+        control_mode="absolute joint pose",
+        action_horizon=30,
+        n_action_steps=30,
+    )
+
+
 def build_molmoact2_so100_so101() -> Tuple[List[RawMixtureEntry], Dict[str, Dict[str, object]]]:
     return build_single_lerobot_mixture(
         name="so100_so101",
@@ -423,5 +446,6 @@ MOLMOACT2_LEROBOT_MIXTURES: Dict[str, MixtureBuilder] = {
     "libero_goal": build_molmoact2_libero_goal,
     "yam": build_molmoact2_yam,
     "yam_overfit": build_molmoact2_yam_overfit,
+    "yam_single_cube": build_molmoact2_yam_single_cube,
     "so100_so101": build_molmoact2_so100_so101,
 }
