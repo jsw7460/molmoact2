@@ -407,12 +407,14 @@ def build_molmoact2_yam_single_cube() -> Tuple[List[RawMixtureEntry], Dict[str, 
     Recorded with yam-abc-reproduce and converted to LeRobot v3; the camera key
     carries the recorder's ``_rgb`` suffix. Same absolute-joint-pose convention
     as the bimanual ``yam`` tag, with 7-D state/action (6 joints + gripper).
-    The dataset is local-only: place it at ``$LEROBOT_DATA_ROOT/uwmad/yam_cube_v0``.
+    Hosted as a private HF dataset under the lab org; the loader downloads it
+    into ``$LEROBOT_DATA_ROOT/UWMad-LabAutomation/yam_cube_v0`` on first use
+    (needs an HF token with org read access).
     """
     return build_single_lerobot_mixture(
         name="yam_single_cube",
         tag="yam_single_molmoact2",
-        repo_ids=["lerobot:uwmad/yam_cube_v0"],
+        repo_ids=["lerobot:UWMad-LabAutomation/yam_cube_v0"],
         action_key="action",
         state_keys=["observation.state"],
         camera_keys=["observation.images.top_rgb"],
