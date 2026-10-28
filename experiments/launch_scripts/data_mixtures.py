@@ -426,6 +426,28 @@ def build_molmoact2_yam_single_cube() -> Tuple[List[RawMixtureEntry], Dict[str, 
     )
 
 
+def build_molmoact2_yam_single_metal_insert() -> Tuple[List[RawMixtureEntry], Dict[str, Dict[str, object]]]:
+    """Single-arm YAM station, metal sample inserted into a narrow opening.
+
+    Same station, camera and joint conventions as ``yam_single_cube`` (and
+    the same norm tag, so the single-arm deploy server serves either fine-tune
+    unchanged); only the dataset differs.
+    """
+    return build_single_lerobot_mixture(
+        name="yam_single_metal_insert",
+        tag="yam_single_molmoact2",
+        repo_ids=["lerobot:UWMad-LabAutomation/yam_metal_insert_v0"],
+        action_key="action",
+        state_keys=["observation.state"],
+        camera_keys=["observation.images.top_rgb"],
+        normalize_gripper=False,
+        setup_type="single yam robotic arm in molmoact2",
+        control_mode="absolute joint pose",
+        action_horizon=30,
+        n_action_steps=30,
+    )
+
+
 def build_molmoact2_so100_so101() -> Tuple[List[RawMixtureEntry], Dict[str, Dict[str, object]]]:
     return build_single_lerobot_mixture(
         name="so100_so101",
@@ -449,5 +471,6 @@ MOLMOACT2_LEROBOT_MIXTURES: Dict[str, MixtureBuilder] = {
     "yam": build_molmoact2_yam,
     "yam_overfit": build_molmoact2_yam_overfit,
     "yam_single_cube": build_molmoact2_yam_single_cube,
+    "yam_single_metal_insert": build_molmoact2_yam_single_metal_insert,
     "so100_so101": build_molmoact2_so100_so101,
 }
