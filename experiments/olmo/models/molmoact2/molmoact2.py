@@ -116,6 +116,10 @@ class MolmoAct2Config(Molmo2Config):
     num_flow_timesteps: int = 1
     """Number of timesteps/noise vectors to use per batch item during training."""
 
+    rtc_max_delay: int = 0
+    """Training-time RTC (arXiv:2512.05964): largest simulated inference delay, in action
+    steps, sampled uniformly from [0, rtc_max_delay] per chunk. 0 disables it."""
+
     mask_action_chunk_padding: bool = True
     """Deprecated knob. Time padding from tag horizon to max horizon is always masked in training."""
 
@@ -1069,6 +1073,16 @@ class MolmoAct2(Molmo2):
         )
         timesteps = timesteps.view(batch_size, num_flow_timesteps)
         t_broadcast = timesteps.view(batch_size, num_flow_timesteps, 1, 1)
+        rtc_prefix_mask = None
+        if self.config.rtc_max_delay > 0:
+            # Clean prefix tokens sit at flow time 1; only the postfix is denoised.
+            delay = torch.randint(
+                0, self.config.rtc_max_delay + 1, (batch_size, num_flow_timesteps), device=device
+            )
+            rtc_prefix_mask = torch.arange(actions.shape[1], device=device) < delay.unsqueeze(-1)
+            timesteps = timesteps.unsqueeze(-1).repeat(1, 1, actions.shape[1])
+            timesteps = timesteps.masked_fill(rtc_prefix_mask, 1.0)
+            t_broadcast = timesteps.unsqueeze(-1)
 
         actions = self._mask_action_dim_tensor(
             actions,
@@ -1107,7 +1121,7 @@ class MolmoAct2(Molmo2):
             actions.shape[1],
             actions.shape[2],
         )
-        timesteps_flat = timesteps.reshape(batch_size * num_flow_timesteps)
+        timesteps_flat = timesteps.reshape(batch_size * num_flow_timesteps, -1).squeeze(-1)
         chunk_layer_states_expanded = None
         chunk_layer_kv_states_expanded = None
         if chunk_layer_states is not None:
@@ -1234,6 +1248,14 @@ class MolmoAct2(Molmo2):
             action_dim_is_pad=action_dim_is_pad,
             enabled=self.config.mask_action_dim_padding,
         )
+        if rtc_prefix_mask is not None:
+            # Average over postfix rows only, as in the paper's loss.
+            # The action-dim mask above may already have averaged out the last
+            # dim; a stray trailing dim would broadcast and unmask the prefix.
+            postfix = (~rtc_prefix_mask).to(loss.dtype)
+            if loss.ndim == 4:
+                postfix = postfix.unsqueeze(-1)
+            loss = loss * postfix / postfix.mean()
         if not torch.isfinite(loss).all():
             raise RuntimeError(
                 "Non-finite unreduced flow matching loss: "

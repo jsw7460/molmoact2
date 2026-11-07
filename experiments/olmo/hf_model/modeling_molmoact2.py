@@ -87,10 +87,15 @@ _DEPTH_REASONING_PATCH_SIZE = 32
 _DEPTH_REASONING_THRESHOLD = 0.996
 
 
+def _per_token(value: torch.Tensor) -> torch.Tensor:
+    """Global modulation is (B, D) and broadcasts; RTC's is (B, H, D) already."""
+    return value if value.ndim == 3 else value.unsqueeze(1)
+
+
 def _modulate(
     x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor
 ) -> torch.Tensor:
-    return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
+    return x * (1 + _per_token(scale)) + _per_token(shift)
 
 
 def _round_up_multiple(value: int, multiple_of: int) -> int:
@@ -461,7 +466,7 @@ class ActionExpertBlock(nn.Module):
         rope_cache: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     ) -> torch.Tensor:
         if modulation is None:
-            modulation = self.modulation(conditioning).chunk(9, dim=1)
+            modulation = self.modulation(conditioning).chunk(9, dim=-1)
         (
             shift_msa,
             scale_msa,
@@ -473,19 +478,19 @@ class ActionExpertBlock(nn.Module):
             scale_mlp,
             gate_mlp,
         ) = modulation
-        x = x + gate_msa.unsqueeze(1) * self.self_attn(
+        x = x + _per_token(gate_msa) * self.self_attn(
             _modulate(self.self_norm(x), shift_msa, scale_msa),
             attn_mask=self_attn_mask,
             is_causal=is_causal,
             rope_cache=rope_cache,
         )
-        x = x + gate_mca.unsqueeze(1) * self.cross_attn(
+        x = x + _per_token(gate_mca) * self.cross_attn(
             _modulate(self.cross_norm(x), shift_mca, scale_mca),
             kv_k=cross_kv[0],
             kv_v=cross_kv[1],
             attn_mask=attn_mask,
         )
-        x = x + gate_mlp.unsqueeze(1) * self.mlp(
+        x = x + _per_token(gate_mlp) * self.mlp(
             _modulate(self.ff_norm(x), shift_mlp, scale_mlp)
         )
         return x
@@ -506,7 +511,7 @@ class ActionExpertFinalLayer(nn.Module):
         modulation: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     ) -> torch.Tensor:
         if modulation is None:
-            modulation = self.modulation(conditioning).chunk(2, dim=1)
+            modulation = self.modulation(conditioning).chunk(2, dim=-1)
         shift, scale = modulation
         return self.linear(_modulate(self.norm(x), shift, scale))
 
@@ -517,14 +522,15 @@ class SinusoidalTimeEmbedding(nn.Module):
         self.dim = dim
 
     def forward(self, timesteps: torch.Tensor) -> torch.Tensor:
-        if timesteps.dim() > 1:
-            timesteps = timesteps.view(timesteps.shape[0], -1)[:, 0]
+        timesteps = timesteps.view(timesteps.shape[0], -1)
+        if timesteps.shape[1] == 1:
+            timesteps = timesteps[:, 0]
         half_dim = self.dim // 2
         freq = torch.exp(
             torch.arange(half_dim, device=timesteps.device, dtype=timesteps.dtype)
             * (-math.log(10000.0) / max(half_dim - 1, 1))
         )
-        args = timesteps[:, None] * freq[None, :]
+        args = timesteps[..., None] * freq
         emb = torch.cat([torch.sin(args), torch.cos(args)], dim=-1)
         if self.dim % 2 == 1:
             emb = F.pad(emb, (0, 1))
@@ -761,10 +767,10 @@ class ActionExpert(nn.Module):
             block_modulations = []
             for block in self.blocks:
                 block_modulations.append(
-                    tuple(block.modulation(conditioning).chunk(9, dim=1))
+                    tuple(block.modulation(conditioning).chunk(9, dim=-1))
                 )
             final_modulation = tuple(
-                self.final_layer.modulation(conditioning).chunk(2, dim=1)
+                self.final_layer.modulation(conditioning).chunk(2, dim=-1)
             )
             cache.append(
                 ActionExpertStepModulation(
@@ -1104,6 +1110,10 @@ class _RobotStats:
     def normalize_state(self, state: Any, norm_tag: str) -> Any:
         normalizer = self.state_normalizers.get(str(norm_tag))
         return state if normalizer is None else normalizer.normalize(state)
+
+    def normalize_action(self, action: Any, norm_tag: str) -> Any:
+        normalizer = self.action_normalizers.get(str(norm_tag))
+        return action if normalizer is None else normalizer.normalize(action)
 
     def unnormalize_action(self, action: Any, norm_tag: str) -> Any:
         normalizer = self.action_normalizers.get(str(norm_tag))
@@ -3246,7 +3256,10 @@ class MolmoAct2Model(MolmoAct2PreTrainedModel):
         trajectory = inputs.trajectory
         action_dim_is_pad = inputs.action_dim_is_pad
         mask_enabled = self.config.mask_action_dim_padding
+        prefix_mask = inputs.prefix_mask
         for idx in range(steps):
+            if prefix_mask is not None:
+                trajectory = torch.where(prefix_mask, inputs.action_prefix, trajectory)
             velocity = action_expert.forward_with_context(
                 trajectory,
                 inputs.modulations[idx].conditioning,
@@ -3264,6 +3277,8 @@ class MolmoAct2Model(MolmoAct2PreTrainedModel):
                 action_dim_is_pad=action_dim_is_pad,
                 enabled=mask_enabled,
             )
+        if prefix_mask is not None:
+            trajectory = torch.where(prefix_mask, inputs.action_prefix, trajectory)
         return trajectory
 
     def _resolve_action_horizon(self, action_horizon: Optional[int] = None) -> int:
@@ -3296,6 +3311,7 @@ class MolmoAct2Model(MolmoAct2PreTrainedModel):
         action_horizon: Optional[int] = None,
         num_steps: Optional[int] = None,
         generator: Optional[torch.Generator] = None,
+        action_prefix: Optional[torch.Tensor] = None,
         encoder_kv_states: Optional[Sequence[Tuple[torch.Tensor, torch.Tensor]]] = None,
         encoder_attention_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
@@ -3361,21 +3377,40 @@ class MolmoAct2Model(MolmoAct2PreTrainedModel):
             device=device,
             dtype=trajectory.dtype,
         )
-        flow_timesteps = [
-            torch.full(
-                (batch_size,), idx / steps, device=device, dtype=torch.float32
-            )
-            for idx in range(steps)
-        ]
+        delay = 0 if action_prefix is None else int(action_prefix.shape[1])
+        padded_prefix = None
+        prefix_mask = None
+        if delay:
+            # Training-time RTC: (B, delay, max_action_dim) normalized committed actions.
+            if delay >= trajectory.shape[1]:
+                raise ValueError(f"RTC prefix of {delay} leaves no postfix.")
+            padded_prefix = trajectory.new_zeros(trajectory.shape)
+            padded_prefix[:, :delay] = action_prefix.to(trajectory)
+            prefix_mask = torch.zeros_like(trajectory, dtype=torch.bool)
+            prefix_mask[:, :delay] = True
+        flow_timesteps = []
+        for idx in range(steps):
+            if delay:
+                step_t = torch.full(
+                    trajectory.shape[:2], idx / steps, device=device, dtype=torch.float32
+                )
+                step_t[:, :delay] = 1.0
+            else:
+                step_t = torch.full(
+                    (batch_size,), idx / steps, device=device, dtype=torch.float32
+                )
+            flow_timesteps.append(step_t)
         modulation_cache = action_expert.get_or_prepare_modulation_cache(
             flow_timesteps,
-            cache_key=(steps, batch_size, device, trajectory.dtype),
+            cache_key=(steps, batch_size, device, trajectory.dtype, delay),
         )
         flow_inputs = _ActionFlowInputs(
             trajectory=trajectory,
             context=action_context,
             modulations=modulation_cache,
             action_dim_is_pad=action_dim_is_pad,
+            action_prefix=padded_prefix,
+            prefix_mask=prefix_mask,
         )
         action_cuda_graph_manager = self.action_cuda_graph_manager
         if (
@@ -4599,6 +4634,7 @@ class MolmoAct2ForConditionalGeneration(MolmoAct2PreTrainedModel, GenerationMixi
         num_steps: Optional[int] = None,
         n_action_steps: Optional[int] = None,
         generator: Optional[torch.Generator] = None,
+        action_prefix: Any = None,
         normalize_language: bool = True,
         enable_cuda_graph: bool = True,
         return_dict: bool = True,
@@ -4649,6 +4685,14 @@ class MolmoAct2ForConditionalGeneration(MolmoAct2PreTrainedModel, GenerationMixi
         normalized_state = np.asarray(
             stats.normalize_state(state, norm_tag), dtype=np.float32
         )
+        normalized_prefix = None
+        if action_prefix is not None:
+            if inference_action_mode != "continuous" or enable_depth_reasoning:
+                raise ValueError("RTC `action_prefix` needs plain continuous inference.")
+            # Raw (delay, action_dim) rows, in the units `actions` is returned in.
+            normalized_prefix = np.asarray(
+                stats.normalize_action(action_prefix, norm_tag), dtype=np.float32
+            )
         num_state_tokens = int(self.config.num_state_tokens or 0)
         if num_state_tokens <= 0:
             raise RuntimeError(
@@ -4746,12 +4790,24 @@ class MolmoAct2ForConditionalGeneration(MolmoAct2PreTrainedModel, GenerationMixi
                         .astype(np.int64),
                     }
             else:
+                prefix_tensor = None
+                if normalized_prefix is not None:
+                    prefix_tensor = torch.zeros(
+                        1,
+                        normalized_prefix.shape[0],
+                        int(self.config.max_action_dim),
+                        device=self.device,
+                    )
+                    prefix_tensor[:, :, : normalized_prefix.shape[1]] = torch.as_tensor(
+                        normalized_prefix, device=self.device
+                    )
                 actions = self.model.generate_actions_from_inputs(
                     **inputs,
                     action_dim_is_pad=action_dim_is_pad,
                     action_horizon=generation_horizon,
                     num_steps=num_steps,
                     generator=generator,
+                    action_prefix=prefix_tensor,
                 )
         else:
             if enable_depth_reasoning:

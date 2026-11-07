@@ -239,6 +239,8 @@ def main():
     )
     parser.add_argument("--n_obs_steps", default=1, type=int)
     parser.add_argument("--num_flow_timesteps", default=1, type=int)
+    parser.add_argument("--rtc_max_delay", default=0, type=int,
+                        help="Training-time RTC: largest simulated delay in action steps; 0 = off.")
     parser.add_argument("--flow_matching_beta_alpha", default=1.0, type=float)
     parser.add_argument("--flow_matching_beta_beta", default=1.5, type=float)
     parser.add_argument("--flow_matching_cutoff", default=1.0, type=float)
@@ -544,6 +546,9 @@ def main():
         if args.num_flow_timesteps < 1:
             raise ValueError("--num_flow_timesteps must be >= 1")
         model_cfg.num_flow_timesteps = args.num_flow_timesteps
+    if not 0 <= args.rtc_max_delay < args.max_action_horizon:
+        raise ValueError("--rtc_max_delay must be in [0, max_action_horizon)")
+    model_cfg.rtc_max_delay = args.rtc_max_delay
     if args.flow_matching_beta_alpha is not None:
         if args.flow_matching_beta_alpha <= 0:
             raise ValueError("--flow_matching_beta_alpha must be > 0")

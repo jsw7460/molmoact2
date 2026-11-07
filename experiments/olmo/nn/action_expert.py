@@ -12,8 +12,13 @@ from olmo.config import BaseConfig, D
 from olmo.nn.flash_attention_api import dispatch_flash_attn
 
 
+def _per_token(value: torch.Tensor) -> torch.Tensor:
+    """Global modulation is (B, D) and broadcasts; RTC's is (B, H, D) already."""
+    return value if value.ndim == 3 else value.unsqueeze(1)
+
+
 def _modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
-    return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
+    return x * (1 + _per_token(scale)) + _per_token(shift)
 
 
 def _round_up_multiple(value: int, multiple_of: int) -> int:
@@ -421,9 +426,9 @@ class ActionExpertBlock(nn.Module):
             shift_mlp,
             scale_mlp,
             gate_mlp,
-        ) = self.modulation(conditioning).chunk(9, dim=1)
+        ) = self.modulation(conditioning).chunk(9, dim=-1)
 
-        x = x + gate_msa.unsqueeze(1) * self.self_attn(
+        x = x + _per_token(gate_msa) * self.self_attn(
             _modulate(self.self_norm(x), shift_msa, scale_msa),
             attn_mask=self_attn_mask,
             is_causal=is_causal,
@@ -437,13 +442,13 @@ class ActionExpertBlock(nn.Module):
             if cross_context is None:
                 raise ValueError("cross-attention requires cross_context or cross_kv.")
             attn_kwargs["kv"] = cross_context
-        x = x + gate_mca.unsqueeze(1) * self.cross_attn(
+        x = x + _per_token(gate_mca) * self.cross_attn(
             _modulate(self.cross_norm(x), shift_mca, scale_mca),
             attn_mask=attn_mask,
             **attn_kwargs,
         )
 
-        x = x + gate_mlp.unsqueeze(1) * self.mlp(
+        x = x + _per_token(gate_mlp) * self.mlp(
             _modulate(self.ff_norm(x), shift_mlp, scale_mlp)
         )
         return x
@@ -457,7 +462,7 @@ class ActionExpertFinalLayer(nn.Module):
         self.linear = nn.Linear(hidden_size, output_dim)
 
     def forward(self, x: torch.Tensor, conditioning: torch.Tensor) -> torch.Tensor:
-        shift, scale = self.modulation(conditioning).chunk(2, dim=1)
+        shift, scale = self.modulation(conditioning).chunk(2, dim=-1)
         return self.linear(_modulate(self.norm(x), shift, scale))
 
 
@@ -467,15 +472,16 @@ class SinusoidalTimeEmbedding(nn.Module):
         self.dim = dim
 
     def forward(self, timesteps: torch.Tensor) -> torch.Tensor:
-        if timesteps.dim() > 1:
-            timesteps = timesteps.view(timesteps.shape[0], -1)[:, 0]
+        timesteps = timesteps.view(timesteps.shape[0], -1)
+        if timesteps.shape[1] == 1:
+            timesteps = timesteps[:, 0]
         device = timesteps.device
         half_dim = self.dim // 2
         freq = torch.exp(
             torch.arange(half_dim, device=device, dtype=timesteps.dtype)
             * (-math.log(10000.0) / max(half_dim - 1, 1))
         )
-        args = timesteps[:, None] * freq[None, :]
+        args = timesteps[..., None] * freq
         emb = torch.cat([torch.sin(args), torch.cos(args)], dim=-1)
         if self.dim % 2 == 1:
             emb = F.pad(emb, (0, 1))

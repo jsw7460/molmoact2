@@ -15,6 +15,8 @@ class _ActionFlowInputs:
     context: Any
     modulations: Sequence[Any]
     action_dim_is_pad: Optional[torch.Tensor]
+    action_prefix: Optional[torch.Tensor] = None
+    prefix_mask: Optional[torch.Tensor] = None
 
 
 @dataclass
@@ -176,7 +178,7 @@ class ActionCudaGraphManager:
 
     def can_use_action_flow(self, inputs: _ActionFlowInputs) -> bool:
         action_model = self.model
-        if not self.enabled:
+        if not self.enabled or inputs.prefix_mask is not None:
             return False
         if action_model.training or action_model._require_action_expert().training:
             return False
