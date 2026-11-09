@@ -448,6 +448,25 @@ def build_molmoact2_yam_single_metal_insert() -> Tuple[List[RawMixtureEntry], Di
     )
 
 
+def build_molmoact2_yam_single_metal_insert_hitl_smoke() -> Tuple[List[RawMixtureEntry], Dict[str, Dict[str, object]]]:
+    """Code-path check for human-in-the-loop weighting: a handful of takeover
+    rollouts (control_source labels), converted locally and never uploaded.
+    Same station conventions and norm tag as ``yam_single_metal_insert``."""
+    return build_single_lerobot_mixture(
+        name="yam_single_metal_insert_hitl_smoke",
+        tag="yam_single_molmoact2",
+        repo_ids=["lerobot:UWMad-LabAutomation/yam_metal_insert_hitl_smoke"],
+        action_key="action",
+        state_keys=["observation.state"],
+        camera_keys=["observation.images.top_rgb"],
+        normalize_gripper=False,
+        setup_type="single yam robotic arm in molmoact2",
+        control_mode="absolute joint pose",
+        action_horizon=30,
+        n_action_steps=30,
+    )
+
+
 def build_molmoact2_so100_so101() -> Tuple[List[RawMixtureEntry], Dict[str, Dict[str, object]]]:
     return build_single_lerobot_mixture(
         name="so100_so101",
@@ -472,5 +491,6 @@ MOLMOACT2_LEROBOT_MIXTURES: Dict[str, MixtureBuilder] = {
     "yam_overfit": build_molmoact2_yam_overfit,
     "yam_single_cube": build_molmoact2_yam_single_cube,
     "yam_single_metal_insert": build_molmoact2_yam_single_metal_insert,
+    "yam_single_metal_insert_hitl_smoke": build_molmoact2_yam_single_metal_insert_hitl_smoke,
     "so100_so101": build_molmoact2_so100_so101,
 }
