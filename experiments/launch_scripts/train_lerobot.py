@@ -48,6 +48,7 @@ from launch_scripts.lerobot_utils.stats import (
 )
 from olmo.data.data_loader import DataLoaderConfig
 from olmo.data.dynamic_packer import PackingConfig
+from olmo.data.hitl_weighting import parse_class_weights
 from olmo.data.robot_processing import RobotProcessorConfig
 from olmo.extra_tokens import (
     ACTION_TOKENS,
@@ -241,6 +242,13 @@ def main():
     parser.add_argument("--num_flow_timesteps", default=1, type=int)
     parser.add_argument("--rtc_max_delay", default=0, type=int,
                         help="Training-time RTC: largest simulated delay in action steps; 0 = off.")
+    parser.add_argument("--hitl_class_weights", default="", type=str,
+                        help="Human-in-the-loop row weights per control_source class, e.g. the output of "
+                             "ManipForge scripts/hitl_class_weights.py; empty = off (olmo/data/hitl_weighting.py).")
+    parser.add_argument("--hitl_preintv_frames", default=0, type=int,
+                        help="Policy frames before each takeover labelled pre-intervention (weight 0).")
+    parser.add_argument("--hitl_gripper_dims", default="", type=str,
+                        help="Comma-separated gripper action dims, zero-weighted on grip-pending rows.")
     parser.add_argument("--flow_matching_beta_alpha", default=1.0, type=float)
     parser.add_argument("--flow_matching_beta_beta", default=1.5, type=float)
     parser.add_argument("--flow_matching_cutoff", default=1.0, type=float)
@@ -546,6 +554,10 @@ def main():
         if args.num_flow_timesteps < 1:
             raise ValueError("--num_flow_timesteps must be >= 1")
         model_cfg.num_flow_timesteps = args.num_flow_timesteps
+    if args.hitl_class_weights:
+        parse_class_weights(args.hitl_class_weights)  # fail before the run starts
+    if args.hitl_preintv_frames < 0:
+        raise ValueError("--hitl_preintv_frames must be >= 0")
     if not 0 <= args.rtc_max_delay < args.max_action_horizon:
         raise ValueError("--rtc_max_delay must be in [0, max_action_horizon)")
     model_cfg.rtc_max_delay = args.rtc_max_delay

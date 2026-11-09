@@ -279,6 +279,7 @@ class ExamplePreprocessor:
         if action_horizon_is_pad is None:
             action_horizon_is_pad = example.get("action_is_pad")
         action_dim_is_pad = example.get("action_dim_is_pad")
+        action_loss_weight = example.get("action_loss_weight")
         if "image" in example:
             is_image_group = isinstance(example["image"], (list, tuple))
             try:
@@ -429,6 +430,8 @@ class ExamplePreprocessor:
             out["action_horizon_is_pad"] = np.asarray(action_horizon_is_pad, dtype=np.bool_)
         if action_dim_is_pad is not None:
             out["action_dim_is_pad"] = np.asarray(action_dim_is_pad, dtype=np.bool_)
+        if action_loss_weight is not None:
+            out["action_loss_weight"] = np.asarray(action_loss_weight, dtype=np.float32)
         depth_updated_mask = example.get("depth_updated_mask")
         if depth_updated_mask is not None:
             out["depth_updated_mask"] = np.asarray(depth_updated_mask, dtype=np.bool_)

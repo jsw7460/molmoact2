@@ -99,5 +99,8 @@ def _set_lerobot_environment_from_args(args) -> None:
     os.environ["LEROBOT_ADD_SETUP_TOKENS"] = "1" if getattr(args, "add_setup_tokens", False) else "0"
     os.environ["LEROBOT_ADD_CONTROL_TOKENS"] = "1" if getattr(args, "add_control_tokens", False) else "0"
     os.environ["LEROBOT_RANDOM_CAMERA_ORDER"] = str(args.random_camera_order)
+    os.environ["LEROBOT_HITL_CLASS_WEIGHTS"] = str(args.hitl_class_weights)
+    os.environ["LEROBOT_HITL_PREINTV_FRAMES"] = str(args.hitl_preintv_frames)
+    os.environ["LEROBOT_HITL_GRIPPER_DIMS"] = str(args.hitl_gripper_dims)
     os.environ["LEROBOT_USE_ANNOTATED_TASK"] = "1" if args.use_annotated_task else "0"
     os.environ["LEROBOT_SAMPLE_ANNOTATED_TASK"] = "1" if args.sample_annotated_task else "0"

@@ -120,6 +120,12 @@ from olmo.data.robot_processing import (
 )
 
 from olmo.data.dataset import Dataset
+from olmo.data.hitl_weighting import (
+    FrameClasses,
+    parse_class_weights,
+    parse_gripper_dims,
+    row_weights,
+)
 from olmo.preprocessing.sequence_length_utils import MalformedExampleError
 
 log = logging.getLogger(__name__)
@@ -1364,9 +1370,18 @@ class LeRobotDatasetWrapper(Dataset):
         depth_dataset: Optional[LeRobotDataset] = None,
         depth_dataset_reopen_kwargs: Optional[Dict[str, Any]] = None,
         depth_dataset_reopen_kwargs_by_camera: Optional[Dict[str, Dict[str, Any]]] = None,
+        hitl_class_weights: Optional[Dict[int, float]] = None,
+        hitl_preintv_frames: int = 0,
+        hitl_gripper_dims: Sequence[int] = (),
     ):
         super().__init__()
         self.dataset = dataset
+        # Human-in-the-loop row weights (olmo/data/hitl_weighting.py); None = off,
+        # no action_loss_weight is emitted and training is unchanged.
+        self.hitl_class_weights = None if hitl_class_weights is None else dict(hitl_class_weights)
+        self.hitl_preintv_frames = _require_non_negative_int(hitl_preintv_frames, label="hitl_preintv_frames")
+        self.hitl_gripper_dims = tuple(int(d) for d in hitl_gripper_dims)
+        self._hitl_frames: Optional[FrameClasses] = None
         self._depth_dataset = depth_dataset
         self._depth_dataset_reopen_kwargs = dict(depth_dataset_reopen_kwargs or {})
         self._depth_datasets_by_camera: Dict[str, Optional[LeRobotDataset]] = {
@@ -2614,6 +2629,24 @@ class LeRobotDatasetWrapper(Dataset):
             )
         return real_dim
 
+    def _hitl_row_weights(self, frame_index: int, action: Optional[np.ndarray]) -> Optional[np.ndarray]:
+        """``(tag_horizon, action_dim)`` loss weights for the chunk starting at
+        ``frame_index``, from the dataset's ``control_source`` labels."""
+        if self.hitl_class_weights is None or action is None:
+            return None
+        if self._hitl_frames is None:
+            root = getattr(self.dataset, "root", None)
+            if root is None:
+                raise RuntimeError(f"{self._get_repo_id()}: HITL weights need the dataset's local root")
+            self._hitl_frames = FrameClasses(Path(root), self.hitl_preintv_frames)
+        action_2d = action[None, :] if action.ndim == 1 else action
+        classes = self._hitl_frames.chunk(int(frame_index), self.action_delta_indices)
+        if len(classes) != action_2d.shape[0]:
+            raise ValueError(
+                f"HITL row labels ({len(classes)}) do not match the action chunk ({action_2d.shape[0]})"
+            )
+        return row_weights(classes, self.hitl_class_weights, int(action_2d.shape[-1]), self.hitl_gripper_dims)
+
     def _pad_action_to_max_dim(
         self,
         action: Optional[np.ndarray],
@@ -2672,13 +2705,19 @@ class LeRobotDatasetWrapper(Dataset):
         discrete_action_source = action
         action_time_is_pad = None
         action_dim_is_pad = None
+        action_loss_weight = None
         if self.action_format in {"continuous", "both"}:
+            action_loss_weight = self._hitl_row_weights(mapped_index, action)
             action, action_time_is_pad = _pad_action_to_max_horizon(
                 action,
                 tag_action_horizon=self.tag_action_horizon,
                 max_action_horizon=self.max_action_horizon,
             )
             action, action_dim_is_pad = self._pad_action_to_max_dim(action, repo_id)
+            if action_loss_weight is not None:
+                padded_weight = np.zeros(action.shape, dtype=np.float32)
+                padded_weight[: action_loss_weight.shape[0], : action_loss_weight.shape[1]] = action_loss_weight
+                action_loss_weight = padded_weight
         if state is None and not self._warned_missing_state:
             log.warning("LeRobot example does not contain any state vectors")
             self._warned_missing_state = True
@@ -2839,6 +2878,8 @@ class LeRobotDatasetWrapper(Dataset):
             example_out["action_horizon_is_pad"] = action_time_is_pad
         if self.action_format in {"continuous", "both"} and emit_action and action_dim_is_pad is not None:
             example_out["action_dim_is_pad"] = action_dim_is_pad
+        if self.action_format in {"continuous", "both"} and emit_action and action_loss_weight is not None:
+            example_out["action_loss_weight"] = action_loss_weight
         if emit_depth and depth_updated_mask is not None:
             example_out["depth_updated_mask"] = np.asarray(depth_updated_mask, dtype=np.bool_)
         if emit_depth and depth_buffer_codes is not None:
@@ -2908,6 +2949,10 @@ def build_lerobot_dataset(
         drop_n_last_frames = _require_non_negative_int(drop_n_last_frames, label="drop_n_last_frames")
     video_backend = _get_env_str("LEROBOT_VIDEO_BACKEND", "pyav")
     tolerance_s = _get_env_float("LEROBOT_TOLERANCE_S", 1e-3)
+    raw_hitl_weights = _get_env_str("LEROBOT_HITL_CLASS_WEIGHTS", "")
+    hitl_class_weights = parse_class_weights(raw_hitl_weights) if raw_hitl_weights.strip() else None
+    hitl_preintv_frames = _get_env_non_negative_int("LEROBOT_HITL_PREINTV_FRAMES", 0)
+    hitl_gripper_dims = parse_gripper_dims(_get_env_str("LEROBOT_HITL_GRIPPER_DIMS", ""))
     action_format = _get_required_env_choice(
         "LEROBOT_ACTION_FORMAT",
         choices=sorted(SUPPORTED_ACTION_FORMATS),
@@ -3250,6 +3295,9 @@ def build_lerobot_dataset(
         depth_dataset=depth_dataset,
         depth_dataset_reopen_kwargs=depth_dataset_reopen_kwargs,
         depth_dataset_reopen_kwargs_by_camera=depth_dataset_reopen_kwargs_by_camera,
+        hitl_class_weights=hitl_class_weights,
+        hitl_preintv_frames=hitl_preintv_frames,
+        hitl_gripper_dims=hitl_gripper_dims,
     )
     if use_annotated_task:
         wrapper.preload_annotated_tasks()

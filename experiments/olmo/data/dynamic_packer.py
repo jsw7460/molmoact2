@@ -14,13 +14,23 @@ LEGACY_ACTION_IS_PAD_KEY = "action_is_pad"
 PACKED_ACTION_HORIZON_IS_PAD_KEY = "packed_action_horizon_is_pad"
 LEGACY_PACKED_ACTION_IS_PAD_KEY = "packed_action_is_pad"
 
-ACTION_DATA_KEYS = {"states", "actions", ACTION_HORIZON_IS_PAD_KEY, LEGACY_ACTION_IS_PAD_KEY, "action_dim_is_pad"}
+ACTION_LOSS_WEIGHT_KEY = "action_loss_weight"
+PACKED_ACTION_LOSS_WEIGHT_KEY = "packed_action_loss_weight"
+ACTION_DATA_KEYS = {
+    "states",
+    "actions",
+    ACTION_HORIZON_IS_PAD_KEY,
+    LEGACY_ACTION_IS_PAD_KEY,
+    "action_dim_is_pad",
+    ACTION_LOSS_WEIGHT_KEY,
+}
 PACKED_ACTION_META_KEYS = {
     "packed_states",
     "packed_actions",
     PACKED_ACTION_HORIZON_IS_PAD_KEY,
     LEGACY_PACKED_ACTION_IS_PAD_KEY,
     "packed_action_dim_is_pad",
+    PACKED_ACTION_LOSS_WEIGHT_KEY,
     "packed_example_ids",
     "packed_num_chunks",
 }
@@ -76,6 +86,7 @@ def _pack_action_chunks(chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
     actions_list: List[np.ndarray] = []
     pad_list: List[np.ndarray] = []
     dim_pad_list: List[np.ndarray] = []
+    weight_list: List[np.ndarray] = []
     example_ids: List[int] = []
     for chunk in chunks:
         example_ids.append(int(chunk["example_ix"]))
@@ -97,6 +108,9 @@ def _pack_action_chunks(chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
             pad_list.append(_as_array(pads, np.bool_))
         if dim_pads is not None:
             dim_pad_list.append(_as_array(dim_pads, np.bool_))
+        weight = chunk.get(ACTION_LOSS_WEIGHT_KEY)
+        if weight is not None:
+            weight_list.append(_as_array(weight, np.float32))
 
     out: Dict[str, Any] = {}
     if states_list:
@@ -107,6 +121,10 @@ def _pack_action_chunks(chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
         out[PACKED_ACTION_HORIZON_IS_PAD_KEY] = np.stack(pad_list, axis=0)
     if dim_pad_list:
         out["packed_action_dim_is_pad"] = np.stack(dim_pad_list, axis=0)
+    if weight_list:
+        if len(weight_list) != len(example_ids):
+            raise ValueError("action_loss_weight must be set on every packed chunk or on none")
+        out[PACKED_ACTION_LOSS_WEIGHT_KEY] = np.stack(weight_list, axis=0)
     out["packed_example_ids"] = np.asarray(example_ids, dtype=np.int64)
     out["packed_num_chunks"] = np.asarray([len(example_ids)], dtype=np.int32)
     return out

@@ -98,6 +98,7 @@ _ACTION_SUPERVISION_BATCH_KEYS = (
     "action_horizon_is_pad",
     "action_is_pad",
     "action_dim_is_pad",
+    "action_loss_weight",
     "packed_batch_idx",
     "packed_example_ids",
     "packed_action_chunk_is_valid",
@@ -2036,6 +2037,7 @@ class Trainer:
                 "action_horizon_is_pad",
                 "action_is_pad",
                 "action_dim_is_pad",
+                "action_loss_weight",
                 "packed_batch_idx",
                 "packed_example_ids",
                 "packed_action_chunk_is_valid",
@@ -2107,6 +2109,8 @@ class Trainer:
                                 dtype=action_dim_pad_template.dtype,
                                 device=action_dim_pad_template.device,
                             )
+                        if "action_loss_weight" in batch:
+                            chunk_data["action_loss_weight"] = torch.zeros_like(chunk_data["actions"])
                         chunk_data["packed_batch_idx"] = torch.zeros(
                             1, dtype=torch.long, device=chunk_batch_idx.device
                         )

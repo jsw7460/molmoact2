@@ -389,6 +389,7 @@ class MolmoAct2(Molmo2):
         action_horizon_is_pad: Optional[torch.Tensor] = None,
         action_is_pad: Optional[torch.Tensor] = None,
         action_dim_is_pad: Optional[torch.Tensor] = None,
+        action_loss_weight: Optional[torch.Tensor] = None,
         packed_batch_idx: Optional[torch.Tensor] = None,
         packed_example_ids: Optional[torch.Tensor] = None,
         packed_action_chunk_is_valid: Optional[torch.Tensor] = None,
@@ -486,6 +487,7 @@ class MolmoAct2(Molmo2):
                 encoder_attention_mask=encoder_attention_mask,
                 action_horizon_is_pad=resolved_action_horizon_is_pad,
                 action_dim_is_pad=action_dim_is_pad,
+                action_loss_weight=action_loss_weight,
                 states=states,
                 packed_batch_idx=packed_batch_idx,
                 packed_example_ids=packed_example_ids,
@@ -1001,6 +1003,7 @@ class MolmoAct2(Molmo2):
         packed_action_chunk_is_valid: Optional[torch.Tensor],
         subsegment_ids: Optional[torch.Tensor],
         num_flow_timesteps: int = 1,
+        action_loss_weight: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         action_expert = self._require_action_expert()
         if (layer_states is None) == (layer_kv_states is None):
@@ -1243,6 +1246,14 @@ class MolmoAct2(Molmo2):
             action_horizon_is_pad=action_horizon_is_pad,
             enabled=True,
         )
+        if action_loss_weight is not None:
+            # Per-row, per-dim weights (olmo/data/hitl_weighting.py). They average
+            # to 1 over the data, so the mean-over-rows reduction below is kept.
+            if tuple(action_loss_weight.shape) != tuple(actions.shape):
+                raise ValueError(
+                    f"action_loss_weight shape {tuple(action_loss_weight.shape)} != actions {tuple(actions.shape)}"
+                )
+            loss = loss * action_loss_weight.to(device=loss.device, dtype=loss.dtype).unsqueeze(1)
         loss = self._apply_action_dim_padding_mask(
             loss,
             action_dim_is_pad=action_dim_is_pad,

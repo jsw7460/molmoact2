@@ -232,6 +232,10 @@ class MMCollator:
                 if dim_pad_arr is not None:
                     arr = np.asarray(dim_pad_arr, dtype=np.bool_)
                     num_chunks = _ensure_count(num_chunks, arr, "action_dim_is_pad")
+                weight_arr = example.get("packed_action_loss_weight")
+                if weight_arr is not None:
+                    arr = np.asarray(weight_arr, dtype=np.float32)
+                    num_chunks = _ensure_count(num_chunks, arr, "action_loss_weight")
                 example_arr = example.get("packed_example_ids")
                 if example_arr is not None:
                     arr = np.asarray(example_arr, dtype=np.int64)
@@ -262,9 +266,15 @@ class MMCollator:
                         "actions": action_arr,
                         "action_horizon_is_pad": pad_arr,
                         "action_dim_is_pad": dim_pad_arr,
+                        "action_loss_weight": weight_arr,
                         "packed_example_ids": arr,
                     }
                 )
+            weights_present = [
+                item["action_loss_weight"] is not None for item in per_example if item["num_chunks"] > 0
+            ]
+            if any(weights_present) and not all(weights_present):
+                raise ValueError("Examples in batch are missing key 'action_loss_weight'")
 
             packed_num_chunks_tensor = torch.tensor(packed_num_chunks, dtype=torch.int32)
 
@@ -273,6 +283,7 @@ class MMCollator:
                 action_chunks: List[np.ndarray] = []
                 pad_chunks: List[np.ndarray] = []
                 dim_pad_chunks: List[np.ndarray] = []
+                weight_chunks: List[np.ndarray] = []
                 batch_ids: List[np.ndarray] = []
                 example_ids: List[np.ndarray] = []
                 valid_chunks: List[np.ndarray] = []
@@ -294,6 +305,8 @@ class MMCollator:
                         pad_chunks.append(np.asarray(pad_arr, dtype=np.bool_))
                     if dim_pad_arr is not None:
                         dim_pad_chunks.append(np.asarray(dim_pad_arr, dtype=np.bool_))
+                    if item["action_loss_weight"] is not None:
+                        weight_chunks.append(np.asarray(item["action_loss_weight"], dtype=np.float32))
                     if example_arr is None:
                         example_arr = np.zeros(num_chunks, dtype=np.int64)
                     example_ids.append(np.asarray(example_arr, dtype=np.int64))
@@ -312,6 +325,8 @@ class MMCollator:
                     tensors["action_horizon_is_pad"] = torch.from_numpy(np.concatenate(pad_chunks, axis=0)).to(torch.bool)
                 if dim_pad_chunks:
                     tensors["action_dim_is_pad"] = torch.from_numpy(np.concatenate(dim_pad_chunks, axis=0)).to(torch.bool)
+                if weight_chunks:
+                    tensors["action_loss_weight"] = torch.from_numpy(np.concatenate(weight_chunks, axis=0)).to(torch.float32)
                 tensors["packed_batch_idx"] = torch.from_numpy(np.concatenate(batch_ids, axis=0)).to(torch.long)
                 tensors["packed_example_ids"] = torch.from_numpy(np.concatenate(example_ids, axis=0)).to(torch.long)
                 tensors["packed_action_chunk_is_valid"] = torch.from_numpy(
@@ -349,9 +364,11 @@ class MMCollator:
             action_rows: List[np.ndarray] = []
             pad_rows: List[np.ndarray] = []
             dim_pad_rows: List[np.ndarray] = []
+            weight_rows: List[np.ndarray] = []
             batch_idx_rows: List[np.ndarray] = []
             example_id_rows: List[np.ndarray] = []
             valid_rows: List[np.ndarray] = []
+            with_weights = any(item["action_loss_weight"] is not None for item in per_example)
 
             for item in per_example:
                 batch_ix = int(item["batch_ix"])
@@ -413,6 +430,11 @@ class MMCollator:
                 action_rows.append(action_arr)
                 pad_rows.append(pad_arr)
                 dim_pad_rows.append(dim_pad_arr)
+                if with_weights:
+                    weight_arr = item["action_loss_weight"]
+                    if weight_arr is None:
+                        weight_arr = np.zeros((num_chunks, *action_shape), dtype=np.float32)
+                    weight_rows.append(np.asarray(weight_arr, dtype=np.float32))
                 batch_idx_rows.append(np.full(num_chunks, batch_ix, dtype=np.int64))
                 example_id_rows.append(example_arr)
                 valid_rows.append(np.ones(num_chunks, dtype=np.bool_))
@@ -427,6 +449,8 @@ class MMCollator:
                     action_rows.append(np.zeros((pad_count, *action_shape), dtype=np.float32))
                     pad_rows.append(np.ones((pad_count, *action_pad_shape), dtype=np.bool_))
                     dim_pad_rows.append(np.ones((pad_count, *action_dim_pad_shape), dtype=np.bool_))
+                    if with_weights:
+                        weight_rows.append(np.zeros((pad_count, *action_shape), dtype=np.float32))
                     batch_idx_rows.append(np.full(pad_count, batch_ix, dtype=np.int64))
                     example_id_rows.append(np.full(pad_count, -1, dtype=np.int64))
                     valid_rows.append(np.zeros(pad_count, dtype=np.bool_))
@@ -446,6 +470,8 @@ class MMCollator:
             }
             if state_rows:
                 tensors["states"] = torch.from_numpy(np.concatenate(state_rows, axis=0)).to(torch.float32)
+            if weight_rows:
+                tensors["action_loss_weight"] = torch.from_numpy(np.concatenate(weight_rows, axis=0)).to(torch.float32)
             return tensors
 
         def _stack_optional_dense(key: str, torch_dtype: torch.dtype, numpy_dtype=None, legacy_key: Optional[str] = None):
@@ -605,6 +631,7 @@ class MMCollator:
             _stack_optional_dense("actions", torch.float32, numpy_dtype=np.float32)
             _stack_optional_dense("action_horizon_is_pad", torch.bool, numpy_dtype=np.bool_, legacy_key="action_is_pad")
             _stack_optional_dense("action_dim_is_pad", torch.bool, numpy_dtype=np.bool_)
+            _stack_optional_dense("action_loss_weight", torch.float32, numpy_dtype=np.float32)
         packed_depth_tensors = _collate_packed_depth_side_channels()
         if packed_depth_tensors is not None:
             out.update(packed_depth_tensors)
