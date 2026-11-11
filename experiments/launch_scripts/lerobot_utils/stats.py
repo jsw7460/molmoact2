@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
 import numpy as np
+import pyarrow.parquet as pq
+from huggingface_hub import snapshot_download
 from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
 
 from launch_scripts.data_mixtures import LEROBOT_TAG_PREFIX, is_lerobot_tag, strip_lerobot_tag_prefix
@@ -15,6 +18,7 @@ from launch_scripts.lerobot_utils.train_plan import (
 from olmo.data.data_loader import KwargsMixture
 from olmo.data.lerobot_wrapper import _parse_repo_spec
 from olmo.torch_util import get_world_size, get_global_rank, gather_object
+from olmo.util import get_hf_access_token
 
 log = logging.getLogger(__name__)
 
@@ -25,6 +29,48 @@ def _resolve_repo_root(repo_id: str, root_base: Optional[str]) -> Optional[str]:
     # from an unrelated dataset root that happens to contain data/meta.
     base_root = os.path.expanduser(root_base)
     return os.path.join(base_root, repo_id)
+
+
+def _quantile_keys(stats: Dict[str, object]) -> List[str]:
+    return [k for k in stats if k.startswith("q") and k[1:].isdigit()]
+
+
+def _feature_frames(repo_id: str, repo_root: str, key: str) -> np.ndarray:
+    """Every frame's ``key`` vector of one LeRobot v3 dataset, (frames, dim).
+    Downloads the parquet data files (not the videos) when they are missing."""
+    root = Path(repo_root)
+    files = sorted(root.glob("data/**/*.parquet"))
+    if not files:
+        snapshot_download(
+            repo_id,
+            repo_type="dataset",
+            local_dir=str(root),
+            allow_patterns=["data/*", "data/**"],
+            token=get_hf_access_token(),
+        )
+        files = sorted(root.glob("data/**/*.parquet"))
+    if not files:
+        raise FileNotFoundError(f"No parquet data for '{repo_id}' under {root}/data")
+    parts = [np.asarray(pq.read_table(f, columns=[key]).column(key).to_pylist(), dtype=np.float64) for f in files]
+    values = np.concatenate(parts, axis=0)
+    return values[:, None] if values.ndim == 1 else values
+
+
+def _exact_quantiles(
+    repos: Sequence[tuple[str, str]],
+    key: str,
+    quantile_keys: Sequence[str],
+) -> Dict[str, np.ndarray]:
+    """Quantiles of ``key`` over all frames of all ``(repo_id, root)`` datasets.
+
+    LeRobot stores each dataset's quantiles as the frame-weighted mean of its
+    per-episode quantiles, and merging datasets averages them again. With
+    episodes that cover different parts of the range, that mean sits well
+    inside the pooled quantile -- and q01/q99 are the bounds the normalizer
+    clips actions and states to, so a narrow range makes poses unreachable.
+    """
+    values = np.concatenate([_feature_frames(repo_id, root, key) for repo_id, root in repos], axis=0)
+    return {qk: np.quantile(values, int(qk[1:]) / 100.0, axis=0) for qk in quantile_keys}
 
 
 def _coerce_count(value: Optional[object]) -> Optional[float]:
@@ -536,6 +582,32 @@ def _collect_tagged_stats(
                     if accumulated is not None and not isinstance(accumulated, dict):
                         accumulated = None
                     merged[key] = _merge_feature_stats(accumulated, repo_stats[key])
+            unique_repos = list(dict.fromkeys(repos))
+            for key, feature_stats in merged.items():
+                if not isinstance(feature_stats, dict):
+                    continue
+                q_keys = _quantile_keys(feature_stats)
+                if not q_keys:
+                    continue
+                if not root_base:
+                    raise ValueError(
+                        f"Exact quantiles for tag '{tag}' need the local dataset roots; set LEROBOT_DATA_ROOT."
+                    )
+                exact = _exact_quantiles(
+                    [(repo_id, _resolve_repo_root(repo_id, root_base)) for repo_id in unique_repos],
+                    key,
+                    q_keys,
+                )
+                for qk in q_keys:
+                    log.info(
+                        "Tag '%s' key '%s' %s: stored %s -> pooled %s",
+                        tag,
+                        key,
+                        qk,
+                        np.round(np.asarray(feature_stats[qk], dtype=np.float64), 4).tolist(),
+                        np.round(exact[qk], 4).tolist(),
+                    )
+                feature_stats.update(exact)
             for key, names in feature_names_by_key.items():
                 if key in merged and isinstance(merged[key], dict):
                     merged[key]["names"] = list(names)
